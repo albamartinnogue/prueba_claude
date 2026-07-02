@@ -6,6 +6,11 @@ ajustan sus parametros para que la media y la mediana (truncadas al rango
 valores objetivo. Despues se generan muestras respetando siempre el rango
 [min, max] de forma exacta.
 
+Si el usuario indica ademas una desviacion tipica (sd) objetivo, el ajuste
+numerico intenta aproximarla tambien (normal, lognormal, exponential y
+beta). En triangular y uniform no se usa: solo tienen un grado de libertad
+(uniform ninguno) y ya se dedica a aproximar la media/rango.
+
 No se busca una coincidencia perfecta con los estadisticos objetivo (el
 propio enunciado del problema lo permite), sino una aproximacion razonable
 obtenida mediante ajuste numerico u formulas cerradas segun la familia.
@@ -35,8 +40,24 @@ def _truncated_sample(dist, params: dict, low: float, high: float, size: int, rn
     return np.clip(dist.ppf(u, **params), low, high)
 
 
+def _shape_args(dist, params: dict) -> tuple:
+    """Extrae los parametros de forma (p.ej. 's' en lognorm) en el orden que espera scipy."""
+    if not dist.shapes:
+        return ()
+    names = [s.strip() for s in dist.shapes.split(",")]
+    return tuple(params[n] for n in names)
+
+
 def _truncated_mean(dist, params: dict, low: float, high: float) -> float:
-    mean = dist.expect(lambda x: x, args=(), loc=params.get("loc", 0), scale=params.get("scale", 1), lb=low, ub=high, conditional=True)
+    mean = dist.expect(
+        lambda x: x,
+        args=_shape_args(dist, params),
+        loc=params.get("loc", 0),
+        scale=params.get("scale", 1),
+        lb=low,
+        ub=high,
+        conditional=True,
+    )
     return float(mean)
 
 
@@ -48,7 +69,21 @@ def _truncated_median(dist, params: dict, low: float, high: float) -> float:
     return float(dist.ppf(0.5 * (a_cdf + b_cdf), **params))
 
 
-def _fit_by_mean_median(
+def _truncated_sd(dist, params: dict, low: float, high: float, mean: float) -> float:
+    second_moment = dist.expect(
+        lambda x: x**2,
+        args=_shape_args(dist, params),
+        loc=params.get("loc", 0),
+        scale=params.get("scale", 1),
+        lb=low,
+        ub=high,
+        conditional=True,
+    )
+    variance = max(float(second_moment) - mean**2, 0.0)
+    return float(np.sqrt(variance))
+
+
+def _fit_by_moments(
     dist,
     build_params: Callable[[np.ndarray], dict],
     x0: np.ndarray,
@@ -57,18 +92,23 @@ def _fit_by_mean_median(
     low: float,
     high: float,
     bounds: list[tuple[float, float]],
+    target_sd: float | None = None,
 ) -> dict:
-    """Minimiza el error cuadratico entre (media, mediana) truncadas y los objetivos."""
+    """Minimiza el error cuadratico entre (media, mediana[, sd]) truncadas y los objetivos."""
 
     def loss(x: np.ndarray) -> float:
         params = build_params(x)
         try:
             m = _truncated_mean(dist, params, low, high)
             med = _truncated_median(dist, params, low, high)
+            span = max(high - low, 1e-9)
+            error = ((m - target_mean) / span) ** 2 + ((med - target_median) / span) ** 2
+            if target_sd is not None:
+                sd = _truncated_sd(dist, params, low, high, m)
+                error += ((sd - target_sd) / span) ** 2
         except Exception:
             return 1e12
-        span = max(high - low, 1e-9)
-        return ((m - target_mean) / span) ** 2 + ((med - target_median) / span) ** 2
+        return error
 
     result = optimize.minimize(loss, x0=x0, method="Nelder-Mead", bounds=bounds)
     return build_params(result.x)
@@ -83,7 +123,7 @@ def _fit_normal(spec: ContinuousVariableSpec) -> tuple[Sampler]:
         return {"loc": x[0], "scale": max(np.exp(x[1]), 1e-9)}
 
     bounds = [(low - span, high + span), (np.log(span / 100 + 1e-9), np.log(span * 10 + 1e-9))]
-    params = _fit_by_mean_median(stats.norm, build_params, x0, mean, median, low, high, bounds)
+    params = _fit_by_moments(stats.norm, build_params, x0, mean, median, low, high, bounds, target_sd=spec.sd)
 
     def sampler(rng: np.random.Generator, size: int) -> np.ndarray:
         return _truncated_sample(stats.norm, params, low, high, size, rng)
@@ -105,7 +145,7 @@ def _fit_lognormal(spec: ContinuousVariableSpec) -> Sampler:
         return {"s": max(np.exp(x[1]), 1e-6), "loc": 0.0, "scale": np.exp(x[0])}
 
     bounds = [(np.log(eps), np.log(high * 10 + eps)), (np.log(1e-3), np.log(5.0))]
-    params = _fit_by_mean_median(stats.lognorm, build_params, x0, mean, median, low_support, high, bounds)
+    params = _fit_by_moments(stats.lognorm, build_params, x0, mean, median, low_support, high, bounds, target_sd=spec.sd)
 
     def sampler(rng: np.random.Generator, size: int) -> np.ndarray:
         return _truncated_sample(stats.lognorm, params, low_support, high, size, rng)
@@ -146,7 +186,7 @@ def _fit_exponential(spec: ContinuousVariableSpec) -> Sampler:
         return {"loc": x[0], "scale": max(np.exp(x[1]), 1e-9)}
 
     bounds = [(low - 20 * span, high), (np.log(span / 100 + 1e-9), np.log(span * 20 + 1e-9))]
-    params = _fit_by_mean_median(stats.expon, build_params, x0, mean, median, low, high, bounds)
+    params = _fit_by_moments(stats.expon, build_params, x0, mean, median, low, high, bounds, target_sd=spec.sd)
 
     def sampler(rng: np.random.Generator, size: int) -> np.ndarray:
         return _truncated_sample(stats.expon, params, low, high, size, rng)
@@ -159,6 +199,7 @@ def _fit_beta(spec: ContinuousVariableSpec) -> Sampler:
     span = max(high - low, 1e-9)
     target_mean = np.clip((mean - low) / span, 1e-3, 1 - 1e-3)
     target_median = np.clip((median - low) / span, 1e-3, 1 - 1e-3)
+    target_sd = spec.sd / span if spec.sd is not None else None
 
     k0 = 4.0
     a0 = target_mean * k0
@@ -169,7 +210,10 @@ def _fit_beta(spec: ContinuousVariableSpec) -> Sampler:
         a, b = np.exp(x[0]), np.exp(x[1])
         m = a / (a + b)
         med = stats.beta.ppf(0.5, a, b)
-        return (m - target_mean) ** 2 + (med - target_median) ** 2
+        error = (m - target_mean) ** 2 + (med - target_median) ** 2
+        if target_sd is not None:
+            error += (stats.beta.std(a, b) - target_sd) ** 2
+        return error
 
     bounds = [(np.log(0.05), np.log(500)), (np.log(0.05), np.log(500))]
     result = optimize.minimize(loss, x0=x0, method="Nelder-Mead", bounds=bounds)

@@ -25,11 +25,14 @@ class ValidationReport:
         if self.continuous:
             lines.append("\nVariables continuas (objetivo -> obtenido):")
             for name, stats in self.continuous.items():
+                sd_part = ""
+                if stats.get("target_sd") is not None:
+                    sd_part = f" | sd {stats['target_sd']:.3g} -> {stats['achieved_sd']:.3g}"
                 lines.append(
                     f"  {name}: mean {stats['target_mean']:.3g} -> {stats['achieved_mean']:.3g} | "
                     f"median {stats['target_median']:.3g} -> {stats['achieved_median']:.3g} | "
                     f"min {stats['target_min']:.3g} -> {stats['achieved_min']:.3g} | "
-                    f"max {stats['target_max']:.3g} -> {stats['achieved_max']:.3g}"
+                    f"max {stats['target_max']:.3g} -> {stats['achieved_max']:.3g}" + sd_part
                 )
         if self.categorical:
             lines.append("\nVariables categoricas (objetivo -> obtenido):")
@@ -107,6 +110,8 @@ class Simulator:
                 "achieved_min": float(np.min(values)),
                 "target_max": var.max,
                 "achieved_max": float(np.max(values)),
+                "target_sd": var.sd,
+                "achieved_sd": float(np.std(values)),
             }
 
         categorical_stats: dict[str, dict[str, tuple[float, float]]] = {}

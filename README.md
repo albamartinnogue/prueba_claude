@@ -26,10 +26,16 @@ streamlit run app.py
 
 Abre una app en el navegador donde puedes anadir o quitar variables con un
 boton, escribir el nombre y desplegar cada una para editar sus caracteristicas
-(tipo, distribucion, media/mediana/min/max o categorias y proporciones), definir
-la matriz de correlaciones entre las variables continuas en una tabla editable,
-y generar y descargar el CSV con un informe objetivo-vs-obtenido, sin tocar
-ningun fichero YAML a mano.
+(tipo, distribucion, media/mediana/min/max/sd o categorias y proporciones),
+definir la matriz de correlaciones entre las variables continuas en una tabla
+editable, y generar y descargar el CSV con un informe objetivo-vs-obtenido y
+un histograma por cada variable continua, sin tocar ningun fichero YAML a mano.
+
+Todos los campos de variables y de la matriz de correlaciones viven dentro de
+un unico formulario: los valores que escribes se guardan al pulsar cualquier
+boton de esa seccion (➕ Anadir variable, 🗑️ Eliminar, 💾 Aplicar cambios o
+🚀 Generar simulacion), para que nunca se pierda lo que ya habias introducido
+en otra variable.
 
 ## Uso por linea de comandos
 
@@ -85,20 +91,23 @@ correlation_matrix:            # opcional; solo entre variables continuas
 
 ### Variables continuas
 
-Para cada variable se indica `distribution`, `mean`, `median`, `min` y `max`.
-El programa ajusta numericamente los parametros de la distribucion elegida
-para que su media y mediana (calculadas dentro del rango `[min, max]`) se
+Para cada variable se indica `distribution`, `mean`, `median`, `min` y `max`, y
+opcionalmente `sd` (desviacion tipica objetivo). El programa ajusta
+numericamente los parametros de la distribucion elegida para que su media,
+mediana (y sd si se indica), calculadas dentro del rango `[min, max]`, se
 acerquen a los valores objetivo, y despues genera los datos respetando
 siempre el rango indicado. Distribuciones soportadas:
 
-- `normal`: distribucion normal truncada al rango.
-- `lognormal`: distribucion log-normal truncada al rango.
+- `normal`: distribucion normal truncada al rango. Usa `sd` si se indica.
+- `lognormal`: distribucion log-normal truncada al rango. Usa `sd` si se indica.
 - `uniform`: uniforme entre `min` y `max` (por definicion no admite ajustar
-  media/mediana de forma independiente del rango).
+  media/mediana/sd de forma independiente del rango).
 - `triangular`: distribucion triangular con moda ajustada para aproximar la
-  media indicada.
-- `exponential`: exponencial (con desplazamiento) truncada al rango.
-- `beta`: distribucion beta reescalada al rango `[min, max]`.
+  media indicada (un unico grado de libertad: no usa `sd`).
+- `exponential`: exponencial (con desplazamiento) truncada al rango. Usa `sd`
+  si se indica.
+- `beta`: distribucion beta reescalada al rango `[min, max]`. Usa `sd` si se
+  indica.
 
 Nota: si los parametros pedidos son matematicamente incompatibles entre si
 (por ejemplo, una media muy alta con una distribucion demasiado simetrica y

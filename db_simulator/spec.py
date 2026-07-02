@@ -49,6 +49,7 @@ class ContinuousVariableSpec:
     median: float
     min: float
     max: float
+    sd: float | None = None
 
     def validate(self) -> None:
         if self.distribution not in CONTINUOUS_DISTRIBUTIONS:
@@ -68,6 +69,8 @@ class ContinuousVariableSpec:
             )
         if self.distribution == "lognormal" and self.min < 0:
             raise SpecError(f"Variable '{self.name}': la distribucion lognormal requiere min >= 0.")
+        if self.sd is not None and self.sd <= 0:
+            raise SpecError(f"Variable '{self.name}': sd ({self.sd}) debe ser positiva.")
 
 
 @dataclass
@@ -163,6 +166,7 @@ def _parse_variable(raw: dict[str, Any]) -> ContinuousVariableSpec | Categorical
         missing = [k for k in required if k not in raw]
         if missing:
             raise SpecError(f"Variable '{name}': faltan campos {missing} para tipo continuous.")
+        sd = raw.get("sd")
         return ContinuousVariableSpec(
             name=name,
             distribution=raw["distribution"],
@@ -170,6 +174,7 @@ def _parse_variable(raw: dict[str, Any]) -> ContinuousVariableSpec | Categorical
             median=float(raw["median"]),
             min=float(raw["min"]),
             max=float(raw["max"]),
+            sd=float(sd) if sd not in (None, "") else None,
         )
     if var_type == "categorical":
         if "categories" not in raw:

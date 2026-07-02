@@ -43,3 +43,17 @@ def test_uniform_ignores_target_and_covers_range():
     assert values.min() >= 0
     assert values.max() <= 10
     assert abs(np.mean(values) - 5) < 0.5
+
+
+@pytest.mark.parametrize("distribution", ["normal", "lognormal", "exponential", "beta"])
+def test_sd_target_is_approximated(distribution):
+    spec = ContinuousVariableSpec(
+        name="v", distribution=distribution, mean=40, median=38, min=18, max=85, sd=6.0
+    )
+    sampler = build_sampler(spec)
+    rng = np.random.default_rng(0)
+    values = sampler(rng, N)
+
+    assert values.min() >= 18 - 1e-9
+    assert values.max() <= 85 + 1e-9
+    assert abs(np.std(values) - 6.0) <= 2.5
