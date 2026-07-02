@@ -18,7 +18,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Uso
+## Interfaz web (recomendado)
+
+```bash
+streamlit run app.py
+```
+
+Abre una app en el navegador donde puedes anadir o quitar variables con un
+boton, escribir el nombre y desplegar cada una para editar sus caracteristicas
+(tipo, distribucion, media/mediana/min/max o categorias y proporciones), definir
+la matriz de correlaciones entre las variables continuas en una tabla editable,
+y generar y descargar el CSV con un informe objetivo-vs-obtenido, sin tocar
+ningun fichero YAML a mano.
+
+## Uso por linea de comandos
 
 ```bash
 python -m db_simulator.cli examples/example_spec.yaml -o output.csv --report
