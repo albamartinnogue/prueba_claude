@@ -24,18 +24,29 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Abre una app en el navegador donde puedes anadir o quitar variables con un
-boton, escribir el nombre y desplegar cada una para editar sus caracteristicas
-(tipo, distribucion, media/mediana/min/max/sd o categorias y proporciones),
-definir la matriz de correlaciones entre las variables continuas en una tabla
-editable, y generar y descargar el CSV con un informe objetivo-vs-obtenido y
-un histograma por cada variable continua, sin tocar ningun fichero YAML a mano.
+Abre una app en el navegador con dos partes:
 
-Todos los campos de variables y de la matriz de correlaciones viven dentro de
-un unico formulario: los valores que escribes se guardan al pulsar cualquier
-boton de esa seccion (➕ Anadir variable, 🗑️ Eliminar, 💾 Aplicar cambios o
-🚀 Generar simulacion), para que nunca se pierda lo que ya habias introducido
-en otra variable.
+- **Tabla de variables**: una fila por variable, pensada para poder definir
+  muchas de golpe (anadir/quitar filas con los controles de la propia tabla,
+  pegar varias filas a la vez). Columnas: nombre, tipo, distribucion,
+  media/mediana/min/max/sd (solo aplica a `continuous`) y categorias (solo
+  aplica a `categorical`, formato `Nivel:proporcion;Nivel:proporcion`, ej.
+  `Hombre:48;Mujer:50;Otro:2`).
+- **Relaciones (opcional)**: la matriz de correlaciones entre variables
+  continuas (tabla editable), y bloques de "efecto de una categorica sobre
+  una continua" (ver mas abajo) donde eliges la variable continua afectada,
+  la categorica de la que depende, y cuanto se suma a la media/mediana base
+  para cada uno de sus niveles.
+
+Al generar se muestra la tabla resultante, un boton de descarga CSV, un
+informe objetivo-vs-obtenido (incluyendo el desglose por categoria si hay
+relaciones) y un histograma por cada variable continua.
+
+Toda la seccion (tabla de variables, relaciones y el boton de generar) vive
+dentro de un unico formulario: los valores que escribes se guardan al pulsar
+cualquier boton de esa seccion (➕ Anadir relacion, 🗑️ Eliminar, 💾 Aplicar
+cambios o 🚀 Generar simulacion), para que nunca se pierda lo que ya habias
+introducido en otra fila o relacion.
 
 ## Uso por linea de comandos
 
@@ -128,6 +139,43 @@ distribuciones marginales y despues se reordenan (sin alterar los valores)
 para que su estructura de rangos siga la correlacion deseada. Si la matriz
 proporcionada no es valida (no semidefinida positiva), se proyecta
 automaticamente a la matriz de correlacion valida mas cercana.
+
+### Efecto de una categorica sobre una continua
+
+Una variable continua puede depender de una categorica mediante `effects`:
+para cada nivel de esa categorica se indica cuanto se suma (`mean_delta`,
+opcionalmente tambien `median_delta` y `sd_delta`) a la media/mediana/sd
+*base* de la continua, solo para las filas de ese nivel (los niveles no
+listados no cambian). Por ejemplo, para que las mujeres tengan de media mas
+ingresos que el resto:
+
+```yaml
+variables:
+  - name: ingresos
+    type: continuous
+    distribution: lognormal
+    mean: 30000
+    median: 27000
+    min: 5000
+    max: 250000
+    effects:
+      - by: genero
+        mean_delta: {Mujer: 5000}
+        median_delta: {Mujer: 4000}
+
+  - name: genero
+    type: categorical
+    categories: {Hombre: 0.49, Mujer: 0.49, Otro: 0.02}
+```
+
+Se pueden anadir varias entradas en `effects` (por ejemplo que ingresos
+dependa a la vez de genero y de region); sus desplazamientos se suman.
+
+**Restriccion:** una variable con `effects` no puede aparecer ademas en
+`correlation_matrix`. Forzar una correlacion reordena las filas de esa
+variable (para ajustar su relacion con otra), lo que deshace el efecto por
+categoria. Si necesitas ambas cosas sobre el mismo dato, aplica el efecto por
+categoria y correlaciona otra variable distinta.
 
 ## Tests
 

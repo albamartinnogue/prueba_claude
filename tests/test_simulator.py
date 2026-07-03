@@ -70,3 +70,43 @@ def test_invalid_spec_raises_spec_error():
     raw["variables"][0]["min"] = 200
     with pytest.raises(SpecError):
         Simulator.from_dict(raw)
+
+
+def make_effect_spec():
+    return {
+        "n_rows": N,
+        "seed": 3,
+        "variables": [
+            {"name": "sexo", "type": "categorical", "categories": {"Hombre": 0.5, "Mujer": 0.5}},
+            {
+                "name": "ingresos",
+                "type": "continuous",
+                "distribution": "lognormal",
+                "mean": 30000,
+                "median": 27000,
+                "min": 5000,
+                "max": 250000,
+                "effects": [{"by": "sexo", "mean_delta": {"Mujer": 8000}, "median_delta": {"Mujer": 6000}}],
+            },
+        ],
+    }
+
+
+def test_category_effect_shifts_subgroup_mean():
+    sim = Simulator.from_dict(make_effect_spec())
+    df, report = sim.generate_with_report()
+
+    by_sexo = df.groupby("sexo")["ingresos"].mean()
+    assert by_sexo["Mujer"] - by_sexo["Hombre"] == pytest.approx(8000, abs=1500)
+
+    rows = {row["level"]: row for row in report.effects["ingresos"]}
+    assert rows["Mujer"]["media_obtenida"] == pytest.approx(30000 + 8000, abs=1500)
+    assert rows["Hombre"]["media_obtenida"] == pytest.approx(30000, abs=1500)
+    assert rows["Mujer"]["n"] + rows["Hombre"]["n"] == N
+
+
+def test_category_effect_respects_bounds():
+    raw = make_effect_spec()
+    df = Simulator.from_dict(raw).generate()
+    assert df["ingresos"].min() >= 5000
+    assert df["ingresos"].max() <= 250000

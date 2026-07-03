@@ -110,3 +110,47 @@ def test_correlation_matrix_rejects_asymmetric():
     raw["correlation_matrix"] = {"variables": ["x", "y"], "matrix": [[1.0, 0.5], [0.2, 1.0]]}
     with pytest.raises(SpecError):
         spec_from_dict(raw)
+
+
+def test_category_effect_valid():
+    raw = base_raw()
+    raw["variables"][0]["effects"] = [{"by": "cat", "mean_delta": {"A": 2.0}, "median_delta": {"A": 1.5}}]
+    spec = spec_from_dict(raw)
+    effect = spec.continuous_variables()[0].effects[0]
+    assert effect.by == "cat"
+    assert effect.mean_delta == {"A": 2.0}
+
+
+def test_category_effect_rejects_unknown_categorical_variable():
+    raw = base_raw()
+    raw["variables"][0]["effects"] = [{"by": "no_existe", "mean_delta": {"A": 2.0}}]
+    with pytest.raises(SpecError):
+        spec_from_dict(raw)
+
+
+def test_category_effect_rejects_unknown_level():
+    raw = base_raw()
+    raw["variables"][0]["effects"] = [{"by": "cat", "mean_delta": {"Z": 2.0}}]
+    with pytest.raises(SpecError):
+        spec_from_dict(raw)
+
+
+def test_category_effect_rejects_continuous_by_reference():
+    raw = base_raw()
+    raw["variables"].append(
+        {"name": "y", "type": "continuous", "distribution": "normal", "mean": 5, "median": 5, "min": 0, "max": 10}
+    )
+    raw["variables"][0]["effects"] = [{"by": "y", "mean_delta": {"A": 2.0}}]
+    with pytest.raises(SpecError):
+        spec_from_dict(raw)
+
+
+def test_category_effect_rejects_combination_with_correlation_matrix():
+    raw = base_raw()
+    raw["variables"].append(
+        {"name": "y", "type": "continuous", "distribution": "normal", "mean": 5, "median": 5, "min": 0, "max": 10}
+    )
+    raw["variables"][0]["effects"] = [{"by": "cat", "mean_delta": {"A": 2.0}}]
+    raw["correlation_matrix"] = {"variables": ["x", "y"], "matrix": [[1.0, 0.5], [0.5, 1.0]]}
+    with pytest.raises(SpecError):
+        spec_from_dict(raw)

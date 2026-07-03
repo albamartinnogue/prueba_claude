@@ -1,14 +1,17 @@
 """Interfaz web (Streamlit) para configurar y ejecutar el simulador de bases de datos.
 
-Permite anadir/quitar variables dinamicamente, editar sus caracteristicas
-(nombre, tipo, distribucion, categorias) en un desglose por variable, definir
-una matriz de correlaciones entre variables continuas, y generar/descargar
-el dataset resultante junto con histogramas de las variables continuas.
+Pensada para poder definir muchas variables rapidamente:
+- Las variables se definen en una tabla editable (anadir/quitar filas, pegar
+  varias de golpe) en vez de un formulario por variable.
+- Las relaciones se definen aparte, en dos bloques: la matriz de
+  correlaciones entre variables continuas, y los "efectos" de una variable
+  categorica sobre la media/mediana de una continua (p.ej. que las mujeres
+  tengan de media mas ingresos que el resto).
 
-Los campos de variables viven dentro de un st.form: los valores tecleados
-solo se envian al backend cuando se pulsa alguno de los botones de esa
-seccion (Anadir, Eliminar o Aplicar cambios), evitando que se pierdan datos
-ya introducidos al interactuar con otra variable.
+Todo (tabla de variables, relaciones y el boton de generar) vive dentro de un
+unico st.form: los valores solo se envian al backend cuando se pulsa alguno
+de los botones de esa seccion, para que nunca se pierda lo que ya se habia
+introducido en otra fila o relacion.
 
 Ejecucion: streamlit run app.py
 """
@@ -28,146 +31,211 @@ st.set_page_config(page_title="Simulador de bases de datos", layout="wide")
 HIST_COLOR = "#2a78d6"
 GRID_COLOR = "#e7e7e5"
 
+VARIABLE_COLUMNS = ["nombre", "tipo", "distribucion", "media", "mediana", "min", "max", "sd", "categorias"]
+
+DEFAULT_VARIABLES_DF = pd.DataFrame(
+    [
+        {
+            "nombre": "edad",
+            "tipo": "continuous",
+            "distribucion": "normal",
+            "media": 40.0,
+            "mediana": 38.0,
+            "min": 18.0,
+            "max": 85.0,
+            "sd": np.nan,
+            "categorias": "",
+        },
+        {
+            "nombre": "sexo",
+            "tipo": "categorical",
+            "distribucion": None,
+            "media": np.nan,
+            "mediana": np.nan,
+            "min": np.nan,
+            "max": np.nan,
+            "sd": np.nan,
+            "categorias": "Hombre:50;Mujer:50",
+        },
+    ]
+)
+
+COLUMN_CONFIG = {
+    "nombre": st.column_config.TextColumn("Nombre", required=True, width="medium"),
+    "tipo": st.column_config.SelectboxColumn(
+        "Tipo", options=["continuous", "categorical"], required=True, width="small"
+    ),
+    "distribucion": st.column_config.SelectboxColumn(
+        "Distribucion", options=sorted(CONTINUOUS_DISTRIBUTIONS), help="Solo si tipo = continuous", width="small"
+    ),
+    "media": st.column_config.NumberColumn("Media", help="Solo continuous", format="%.2f"),
+    "mediana": st.column_config.NumberColumn("Mediana", help="Solo continuous", format="%.2f"),
+    "min": st.column_config.NumberColumn("Min", help="Solo continuous", format="%.2f"),
+    "max": st.column_config.NumberColumn("Max", help="Solo continuous", format="%.2f"),
+    "sd": st.column_config.NumberColumn("SD (opcional)", help="Solo continuous; vacio = no fijar", format="%.2f"),
+    "categorias": st.column_config.TextColumn(
+        "Categorias (solo categorical)",
+        help="Formato 'Nivel:proporcion;Nivel:proporcion', ej: Hombre:48;Mujer:50;Otro:2. No hace falta que sumen 100.",
+        width="large",
+    ),
+}
+
+
+def _parse_categories_text(name: str, text: str) -> dict[str, float]:
+    categories: dict[str, float] = {}
+    for part in str(text or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise SpecError(
+                f"Variable '{name}': formato de categorias invalido en '{part}'. Usa 'Nivel:proporcion;Nivel:proporcion'."
+            )
+        level, prop = part.rsplit(":", 1)
+        level = level.strip()
+        try:
+            categories[level] = float(prop.strip())
+        except ValueError as exc:
+            raise SpecError(f"Variable '{name}': proporcion invalida para '{level}' en '{part}'.") from exc
+    return categories
+
+
+def _row_value(row: pd.Series, key: str):
+    value = row.get(key)
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    return value
+
+
+def build_variables_from_table(df: pd.DataFrame) -> list[dict]:
+    variables = []
+    for _, row in df.iterrows():
+        name = str(_row_value(row, "nombre") or "").strip()
+        if not name:
+            continue
+        var_type = _row_value(row, "tipo") or "continuous"
+        if var_type == "continuous":
+            missing = [f for f in ("media", "mediana", "min", "max") if _row_value(row, f) is None]
+            if missing:
+                raise SpecError(f"Variable '{name}': faltan valores en {missing}.")
+            var = {
+                "name": name,
+                "type": "continuous",
+                "distribution": _row_value(row, "distribucion") or "normal",
+                "mean": _row_value(row, "media"),
+                "median": _row_value(row, "mediana"),
+                "min": _row_value(row, "min"),
+                "max": _row_value(row, "max"),
+            }
+            sd = _row_value(row, "sd")
+            if sd is not None:
+                var["sd"] = sd
+            variables.append(var)
+        else:
+            var = {
+                "name": name,
+                "type": "categorical",
+                "categories": _parse_categories_text(name, _row_value(row, "categorias")),
+            }
+            variables.append(var)
+    return variables
+
+
+def get_categorical_levels(df: pd.DataFrame, cat_name: str) -> list[str]:
+    matches = df[df["nombre"] == cat_name]
+    if matches.empty:
+        return []
+    try:
+        return list(_parse_categories_text(cat_name, _row_value(matches.iloc[0], "categorias")).keys())
+    except SpecError:
+        return []
+
 
 def init_state() -> None:
-    if "variables" not in st.session_state:
-        st.session_state.variables = []
-    if "next_id" not in st.session_state:
-        st.session_state.next_id = 0
-    if not st.session_state.variables:
-        add_variable()
+    if "relations" not in st.session_state:
+        st.session_state.relations = []
+    if "next_relation_id" not in st.session_state:
+        st.session_state.next_relation_id = 0
 
 
-def add_variable() -> None:
-    vid = st.session_state.next_id
-    st.session_state.next_id += 1
-    st.session_state.variables.append(vid)
-    st.session_state[f"name_{vid}"] = f"variable_{vid + 1}"
-    st.session_state[f"type_{vid}"] = "continuous"
-    st.session_state[f"distribution_{vid}"] = "normal"
-    st.session_state[f"mean_{vid}"] = 0.0
-    st.session_state[f"median_{vid}"] = 0.0
-    st.session_state[f"min_{vid}"] = 0.0
-    st.session_state[f"max_{vid}"] = 1.0
-    st.session_state[f"use_sd_{vid}"] = False
-    st.session_state[f"sd_{vid}"] = 1.0
+def add_relation() -> None:
+    rid = st.session_state.next_relation_id
+    st.session_state.next_relation_id += 1
+    st.session_state.relations.append(rid)
+    st.session_state[f"rel_continuous_{rid}"] = None
+    st.session_state[f"rel_categorical_{rid}"] = None
 
 
-def ensure_categories(vid: int) -> None:
-    if f"cat_ids_{vid}" not in st.session_state:
-        st.session_state[f"cat_ids_{vid}"] = [0, 1]
-        st.session_state[f"next_cat_id_{vid}"] = 2
-        st.session_state[f"cat_name_{vid}_0"] = "A"
-        st.session_state[f"cat_prop_{vid}_0"] = 50.0
-        st.session_state[f"cat_name_{vid}_1"] = "B"
-        st.session_state[f"cat_prop_{vid}_1"] = 50.0
-
-
-def add_category(vid: int) -> None:
-    cid = st.session_state[f"next_cat_id_{vid}"]
-    st.session_state[f"next_cat_id_{vid}"] += 1
-    st.session_state[f"cat_ids_{vid}"].append(cid)
-    st.session_state[f"cat_name_{vid}_{cid}"] = f"Categoria {cid + 1}"
-    st.session_state[f"cat_prop_{vid}_{cid}"] = 10.0
-
-
-def render_variable(vid: int) -> bool:
-    """Renderiza los campos de una variable dentro del formulario. Devuelve True si se pidio eliminarla."""
-    name = st.session_state.get(f"name_{vid}", f"variable_{vid + 1}")
+def render_relation(rid: int, continuous_names: list[str], categorical_names: list[str], variables_df: pd.DataFrame) -> bool:
     delete_requested = False
-    with st.expander(f"🔧 {name}", expanded=True):
-        col_name, col_type, col_del = st.columns([3, 2, 1])
-        col_name.text_input("Nombre", key=f"name_{vid}")
-        col_type.selectbox(
-            "Tipo",
-            ["continuous", "categorical"],
-            key=f"type_{vid}",
-            format_func=lambda t: "Continua" if t == "continuous" else "Categorica",
+    with st.expander(f"🔗 Relacion #{rid + 1}", expanded=True):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        cont_options = [None] + continuous_names
+        cat_options = [None] + categorical_names
+        cont_name = c1.selectbox(
+            "Variable continua afectada", cont_options, key=f"rel_continuous_{rid}", format_func=lambda x: x or "—"
         )
-        col_del.write("")
-        if col_del.form_submit_button("🗑️ Eliminar", key=f"del_{vid}"):
+        cat_name = c2.selectbox(
+            "Segun la categorica", cat_options, key=f"rel_categorical_{rid}", format_func=lambda x: x or "—"
+        )
+        c3.write("")
+        if c3.form_submit_button("🗑️", key=f"rel_del_{rid}"):
             delete_requested = True
 
-        if st.session_state[f"type_{vid}"] == "continuous":
-            c1, c2 = st.columns([1, 3])
-            c1.selectbox("Distribucion", sorted(CONTINUOUS_DISTRIBUTIONS), key=f"distribution_{vid}")
-
-            c3, c4, c5, c6 = st.columns(4)
-            c3.number_input("Media", key=f"mean_{vid}", format="%.4f")
-            c4.number_input("Mediana", key=f"median_{vid}", format="%.4f")
-            c5.number_input("Minimo", key=f"min_{vid}", format="%.4f")
-            c6.number_input("Maximo", key=f"max_{vid}", format="%.4f")
-
-            csd1, csd2 = st.columns([1, 3])
-            csd1.checkbox("Fijar SD", key=f"use_sd_{vid}", help="Desviacion tipica objetivo (opcional).")
-            if st.session_state[f"use_sd_{vid}"]:
-                csd2.number_input("Desviacion estandar", key=f"sd_{vid}", min_value=0.0001, format="%.4f")
-            if st.session_state[f"distribution_{vid}"] in ("triangular", "uniform") and st.session_state[f"use_sd_{vid}"]:
-                st.caption("⚠️ La distribucion elegida no tiene grados de libertad para ajustar tambien la SD; se ignorara.")
-        else:
-            ensure_categories(vid)
-            st.caption("Categorias y proporciones (no hace falta que sumen 100, se normalizan automaticamente).")
-            for cid in list(st.session_state[f"cat_ids_{vid}"]):
-                cc1, cc2, cc3 = st.columns([3, 2, 1])
-                cc1.text_input("Categoria", key=f"cat_name_{vid}_{cid}", label_visibility="collapsed")
-                cc2.number_input("Proporcion", key=f"cat_prop_{vid}_{cid}", min_value=0.0, format="%.2f", label_visibility="collapsed")
-                if cc3.form_submit_button("🗑️", key=f"cat_del_{vid}_{cid}"):
-                    st.session_state[f"cat_ids_{vid}"].remove(cid)
-                    st.rerun()
-            if st.form_submit_button("+ Anadir categoria", key=f"cat_add_{vid}"):
-                add_category(vid)
-                st.rerun()
+        if cont_name and cat_name:
+            levels = get_categorical_levels(variables_df, cat_name)
+            if not levels:
+                st.caption("⚠️ No se encontraron niveles validos para esta categorica (revisa la columna 'categorias').")
+            else:
+                st.caption(
+                    f"Cuanto se suma a la media/mediana base de '{cont_name}' para cada nivel de '{cat_name}' "
+                    "(deja en 0 los niveles sin efecto)."
+                )
+                for level in levels:
+                    lc1, lc2, lc3 = st.columns([1, 1, 1])
+                    lc1.markdown(f"**{level}**")
+                    lc2.number_input("Δ media", key=f"rel_mean_{rid}_{level}", format="%.2f")
+                    lc3.number_input("Δ mediana", key=f"rel_median_{rid}_{level}", format="%.2f")
     return delete_requested
 
 
-def build_variable_dict(vid: int) -> dict:
-    var_type = st.session_state[f"type_{vid}"]
-    raw = {"name": st.session_state[f"name_{vid}"], "type": var_type}
-    if var_type == "continuous":
-        raw.update(
-            distribution=st.session_state[f"distribution_{vid}"],
-            mean=st.session_state[f"mean_{vid}"],
-            median=st.session_state[f"median_{vid}"],
-            min=st.session_state[f"min_{vid}"],
-            max=st.session_state[f"max_{vid}"],
-            sd=st.session_state[f"sd_{vid}"] if st.session_state.get(f"use_sd_{vid}") else None,
-        )
-    else:
-        ensure_categories(vid)
-        categories = {
-            st.session_state[f"cat_name_{vid}_{cid}"]: st.session_state[f"cat_prop_{vid}_{cid}"]
-            for cid in st.session_state[f"cat_ids_{vid}"]
-        }
-        raw["categories"] = categories
-    return raw
+def build_effects_for_variable(var_name: str, variables_df: pd.DataFrame) -> list[dict]:
+    effects = []
+    for rid in st.session_state.relations:
+        if st.session_state.get(f"rel_continuous_{rid}") != var_name:
+            continue
+        cat_name = st.session_state.get(f"rel_categorical_{rid}")
+        if not cat_name:
+            continue
+        levels = get_categorical_levels(variables_df, cat_name)
+        mean_delta = {lvl: st.session_state.get(f"rel_mean_{rid}_{lvl}", 0.0) for lvl in levels}
+        median_delta = {lvl: st.session_state.get(f"rel_median_{rid}_{lvl}", 0.0) for lvl in levels}
+        mean_delta = {k: v for k, v in mean_delta.items() if v}
+        median_delta = {k: v for k, v in median_delta.items() if v}
+        if mean_delta or median_delta:
+            effects.append({"by": cat_name, "mean_delta": mean_delta, "median_delta": median_delta})
+    return effects
 
 
-def render_correlation_section() -> tuple[list[str] | None, list[list[float]] | None]:
-    continuous_ids = [vid for vid in st.session_state.variables if st.session_state[f"type_{vid}"] == "continuous"]
-    if len(continuous_ids) < 2:
-        st.caption("Anade al menos dos variables continuas para poder definir correlaciones entre ellas.")
+def render_correlation_section(continuous_names: list[str]) -> tuple[list[str] | None, list[list[float]] | None]:
+    if len(continuous_names) < 2:
+        st.caption("Anade al menos dos variables continuas en la tabla para poder definir correlaciones entre ellas.")
         return None, None
 
-    selected_ids = st.multiselect(
-        "Variables continuas a correlacionar",
-        options=continuous_ids,
-        format_func=lambda vid: st.session_state.get(f"name_{vid}", f"variable_{vid + 1}"),
-        key="corr_selection",
-    )
-    if len(selected_ids) < 2:
+    selected = st.multiselect("Variables continuas a correlacionar", options=continuous_names, key="corr_selection")
+    if len(selected) < 2:
         st.caption("Selecciona al menos dos variables para editar su matriz de correlaciones.")
         return None, None
 
-    names = [st.session_state[f"name_{vid}"] for vid in selected_ids]
-    default_matrix = pd.DataFrame(np.eye(len(names)), index=names, columns=names)
-    editor_key = "corr_matrix_" + "_".join(str(i) for i in selected_ids)
+    default_matrix = pd.DataFrame(np.eye(len(selected)), index=selected, columns=selected)
+    editor_key = "corr_matrix_" + "_".join(selected)
     st.caption("Edita los valores fuera de la diagonal (entre -1 y 1). La matriz se simetriza automaticamente.")
     edited = st.data_editor(default_matrix, key=editor_key)
 
     matrix = edited.to_numpy(dtype=float)
     matrix = (matrix + matrix.T) / 2.0
     np.fill_diagonal(matrix, 1.0)
-    return names, matrix.tolist()
+    return selected, matrix.tolist()
 
 
 def render_histograms(df: pd.DataFrame, continuous_names: list[str]) -> None:
@@ -235,6 +303,22 @@ def render_results(df: pd.DataFrame, report) -> None:
             st.markdown("**Variables categoricas**")
             st.dataframe(pd.DataFrame(rows), hide_index=True)
 
+        if report.effects:
+            rows = []
+            for var_name, effect_rows in report.effects.items():
+                for r in effect_rows:
+                    rows.append(
+                        {
+                            "variable": var_name,
+                            "segun": f"{r['by']}={r['level']}",
+                            "media ajustada (objetivo)": round(r["media_base_ajustada"], 4),
+                            "media obtenida": round(r["media_obtenida"], 4),
+                            "n filas": r["n"],
+                        }
+                    )
+            st.markdown("**Relaciones categorica → continua**")
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
+
         if report.correlation is not None:
             st.markdown("**Correlaciones**")
             col_a, col_b = st.columns(2)
@@ -251,7 +335,10 @@ def render_results(df: pd.DataFrame, report) -> None:
 def main() -> None:
     init_state()
     st.title("Simulador de bases de datos")
-    st.write("Define tus variables, sus caracteristicas y (opcionalmente) sus correlaciones, y genera un dataset simulado.")
+    st.write(
+        "Define tus variables en la tabla (puedes anadir muchas filas de golpe), configura relaciones "
+        "opcionales y genera un dataset simulado."
+    )
 
     with st.sidebar:
         st.header("Configuracion general")
@@ -259,47 +346,76 @@ def main() -> None:
         use_seed = st.checkbox("Fijar semilla aleatoria", value=True)
         seed = st.number_input("Semilla", min_value=0, value=42, step=1) if use_seed else None
 
-    st.subheader("Variables")
-    st.caption(
-        "Todos los cambios de esta seccion (variables, categorias y matriz de correlaciones) se "
-        "guardan al pulsar cualquier boton de aqui, incluido 🚀 Generar simulacion."
-    )
-
-    variable_to_delete = None
+    relation_to_delete = None
     with st.form("main_form", enter_to_submit=False):
-        add_clicked = st.form_submit_button("➕ Anadir variable")
-
-        for vid in list(st.session_state.variables):
-            if render_variable(vid):
-                variable_to_delete = vid
+        st.subheader("Variables")
+        st.caption(
+            "Una fila por variable. Anade o borra filas con los controles de la tabla (icono + al final, o "
+            "seleccionar filas y pulsar la papelera). Los cambios se guardan al pulsar cualquier boton de "
+            "esta seccion, incluido 🚀 Generar simulacion."
+        )
+        variables_df = st.data_editor(
+            DEFAULT_VARIABLES_DF,
+            key="variables_editor",
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config=COLUMN_CONFIG,
+            column_order=VARIABLE_COLUMNS,
+        )
 
         apply_clicked = st.form_submit_button("💾 Aplicar cambios", type="primary")
 
-        st.subheader("Matriz de correlaciones (opcional)")
-        corr_names, corr_matrix = render_correlation_section()
+        continuous_names = [
+            str(n).strip()
+            for n, t in zip(variables_df.get("nombre", []), variables_df.get("tipo", []))
+            if t == "continuous" and str(n).strip()
+        ]
+        categorical_names = [
+            str(n).strip()
+            for n, t in zip(variables_df.get("nombre", []), variables_df.get("tipo", []))
+            if t == "categorical" and str(n).strip()
+        ]
+
+        st.subheader("Relaciones (opcional)")
+
+        st.markdown("**Matriz de correlaciones entre continuas**")
+        corr_names, corr_matrix = render_correlation_section(continuous_names)
+
+        st.markdown("**Efecto de una categorica sobre una continua**")
+        st.caption(
+            "Por ejemplo: que la media de ingresos suba para las filas donde sexo = Mujer. "
+            "Se puede anadir mas de una relacion."
+        )
+        add_relation_clicked = st.form_submit_button("➕ Anadir relacion")
+        for rid in list(st.session_state.relations):
+            if render_relation(rid, continuous_names, categorical_names, variables_df):
+                relation_to_delete = rid
 
         st.divider()
         generate_clicked = st.form_submit_button("🚀 Generar simulacion", type="primary")
 
-    if add_clicked:
-        add_variable()
+    if add_relation_clicked:
+        add_relation()
         st.rerun()
-    if variable_to_delete is not None:
-        st.session_state.variables.remove(variable_to_delete)
+    if relation_to_delete is not None:
+        st.session_state.relations.remove(relation_to_delete)
         st.rerun()
     if apply_clicked:
         st.toast("Cambios aplicados.")
 
     if generate_clicked:
-        raw = {
-            "n_rows": int(n_rows),
-            "seed": seed,
-            "variables": [build_variable_dict(vid) for vid in st.session_state.variables],
-        }
-        if corr_names is not None:
-            raw["correlation_matrix"] = {"variables": corr_names, "matrix": corr_matrix}
-
         try:
+            raw_variables = build_variables_from_table(variables_df)
+            for var in raw_variables:
+                if var["type"] == "continuous":
+                    effects = build_effects_for_variable(var["name"], variables_df)
+                    if effects:
+                        var["effects"] = effects
+
+            raw = {"n_rows": int(n_rows), "seed": seed, "variables": raw_variables}
+            if corr_names is not None:
+                raw["correlation_matrix"] = {"variables": corr_names, "matrix": corr_matrix}
+
             spec = spec_from_dict(raw)
             df, report = Simulator(spec).generate_with_report()
         except SpecError as exc:

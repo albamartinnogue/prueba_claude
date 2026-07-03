@@ -18,6 +18,12 @@ variables:
     median: 27000
     min: 5000
     max: 250000
+    # Las mujeres tienen de media mas ingresos que el resto (el desplazamiento
+    # solo se aplica a las filas con genero = Mujer; el resto usa la media base).
+    effects:
+      - by: genero
+        mean_delta: {Mujer: 5000}
+        median_delta: {Mujer: 4000}
 
   - name: satisfaccion
     type: continuous
@@ -50,9 +56,10 @@ variables:
       Este: 0.25
       Oeste: 0.25
 
+# Nota: 'ingresos' no puede aparecer aqui porque ya tiene 'effects' arriba
+# (forzar una correlacion reordena filas y deshace el efecto por categoria).
 correlation_matrix:
-  variables: [edad, ingresos, satisfaccion]
+  variables: [edad, satisfaccion]
   matrix:
-    - [1.0, 0.6, 0.2]
-    - [0.6, 1.0, 0.15]
-    - [0.2, 0.15, 1.0]
+    - [1.0, 0.2]
+    - [0.2, 1.0]

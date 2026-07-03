@@ -24,6 +24,27 @@ con esta forma general:
       matrix:
         - [1.0, 0.6]
         - [0.6, 1.0]
+
+Una variable continua tambien puede depender de una categorica mediante
+`effects` (p.ej. que la media de ingresos suba para un nivel concreto de
+genero):
+
+    variables:
+      - name: ingresos
+        type: continuous
+        distribution: lognormal
+        mean: 30000
+        median: 27000
+        min: 5000
+        max: 250000
+        effects:
+          - by: genero
+            mean_delta: {Mujer: 5000}
+            median_delta: {Mujer: 4000}
+
+Una variable con `effects` no puede aparecer ademas en `correlation_matrix`:
+forzar una correlacion reordena las filas de esa variable y deshace el
+efecto por categoria.
 """
 
 from __future__ import annotations
@@ -42,6 +63,23 @@ class SpecError(ValueError):
 
 
 @dataclass
+class CategoryEffect:
+    """Efecto de una variable categorica sobre una continua.
+
+    Para cada nivel de la variable categorica `by`, `mean_delta`/`median_delta`/
+    `sd_delta` indican cuanto se desplaza la media/mediana/sd base de la
+    variable continua para las filas de ese nivel (los niveles no listados no
+    sufren desplazamiento). Varios efectos sobre la misma variable continua
+    (p.ej. sexo y region) se combinan sumando sus desplazamientos.
+    """
+
+    by: str
+    mean_delta: dict[str, float] = field(default_factory=dict)
+    median_delta: dict[str, float] = field(default_factory=dict)
+    sd_delta: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class ContinuousVariableSpec:
     name: str
     distribution: str
@@ -50,6 +88,7 @@ class ContinuousVariableSpec:
     min: float
     max: float
     sd: float | None = None
+    effects: list[CategoryEffect] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.distribution not in CONTINUOUS_DISTRIBUTIONS:
@@ -149,6 +188,35 @@ class SimulationSpec:
         if self.correlation is not None:
             self.correlation.validate(continuous_names)
 
+        categoricals_by_name = {v.name: v for v in self.variables if isinstance(v, CategoricalVariableSpec)}
+        for v in self.continuous_variables():
+            for effect in v.effects:
+                if effect.by == v.name:
+                    raise SpecError(f"Variable '{v.name}': un efecto no puede depender de si misma.")
+                if effect.by not in categoricals_by_name:
+                    raise SpecError(
+                        f"Variable '{v.name}': el efecto hace referencia a '{effect.by}', que no es "
+                        "una variable categorica definida."
+                    )
+                valid_levels = set(categoricals_by_name[effect.by].categories)
+                for delta_dict, field_name in (
+                    (effect.mean_delta, "mean_delta"),
+                    (effect.median_delta, "median_delta"),
+                    (effect.sd_delta, "sd_delta"),
+                ):
+                    unknown = set(delta_dict) - valid_levels
+                    if unknown:
+                        raise SpecError(
+                            f"Variable '{v.name}': efecto por '{effect.by}' ({field_name}) referencia "
+                            f"niveles inexistentes: {sorted(unknown)}. Niveles validos: {sorted(valid_levels)}."
+                        )
+            if v.effects and self.correlation is not None and v.name in self.correlation.variables:
+                raise SpecError(
+                    f"Variable '{v.name}': no puede tener 'effects' y participar a la vez en "
+                    "correlation_matrix. Forzar una correlacion reordena las filas y deshace el efecto "
+                    "por categoria. Usa una de las dos cosas para esta variable, no ambas."
+                )
+
     def continuous_variables(self) -> list[ContinuousVariableSpec]:
         return [v for v in self.variables if isinstance(v, ContinuousVariableSpec)]
 
@@ -167,6 +235,15 @@ def _parse_variable(raw: dict[str, Any]) -> ContinuousVariableSpec | Categorical
         if missing:
             raise SpecError(f"Variable '{name}': faltan campos {missing} para tipo continuous.")
         sd = raw.get("sd")
+        effects = [
+            CategoryEffect(
+                by=e["by"],
+                mean_delta={str(k): float(v) for k, v in e.get("mean_delta", {}).items()},
+                median_delta={str(k): float(v) for k, v in e.get("median_delta", {}).items()},
+                sd_delta={str(k): float(v) for k, v in e.get("sd_delta", {}).items()},
+            )
+            for e in raw.get("effects", [])
+        ]
         return ContinuousVariableSpec(
             name=name,
             distribution=raw["distribution"],
@@ -175,6 +252,7 @@ def _parse_variable(raw: dict[str, Any]) -> ContinuousVariableSpec | Categorical
             min=float(raw["min"]),
             max=float(raw["max"]),
             sd=float(sd) if sd not in (None, "") else None,
+            effects=effects,
         )
     if var_type == "categorical":
         if "categories" not in raw:
