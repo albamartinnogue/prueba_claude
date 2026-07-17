@@ -1,9 +1,11 @@
 # Simulador de bases de datos
 
 Genera bases de datos tabulares sinteticas (CSV) a partir de una especificacion
-declarada por el usuario en YAML o JSON: variables continuas, variables
-categoricas y una matriz de correlaciones opcional entre las variables
-continuas.
+declarada por el usuario: variables continuas, variables categoricas, una
+matriz de correlaciones opcional entre las continuas, y relaciones opcionales
+de una categorica sobre una continua. La interfaz web se rellena subiendo un
+Excel (pensado para poder definir muchas variables comodamente); tambien se
+puede usar por linea de comandos con un fichero YAML/JSON equivalente.
 
 Los valores generados **aproximan** los parametros indicados (media, mediana,
 min, max, proporciones, correlaciones); no se garantiza una coincidencia
@@ -24,29 +26,79 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Abre una app en el navegador con dos partes:
+El flujo es:
 
-- **Tabla de variables**: una fila por variable, pensada para poder definir
-  muchas de golpe (anadir/quitar filas con los controles de la propia tabla,
-  pegar varias filas a la vez). Columnas: nombre, tipo, distribucion,
-  media/mediana/min/max/sd (solo aplica a `continuous`) y categorias (solo
-  aplica a `categorical`, formato `Nivel:proporcion;Nivel:proporcion`, ej.
-  `Hombre:48;Mujer:50;Otro:2`).
-- **Relaciones (opcional)**: la matriz de correlaciones entre variables
-  continuas (tabla editable), y bloques de "efecto de una categorica sobre
-  una continua" (ver mas abajo) donde eliges la variable continua afectada,
-  la categorica de la que depende, y cuanto se suma a la media/mediana base
-  para cada uno de sus niveles.
+1. **Descarga la plantilla Excel** desde la propia app (boton "⬇️ Descargar
+   plantilla Excel"). Trae una hoja de instrucciones, ejemplos ya rellenos y
+   listas desplegables para `tipo`/`distribucion`.
+2. **Rellena la plantilla fuera de la app** (en Excel, Google Sheets, etc.):
+   borra las filas de ejemplo y anade tus variables. Al ser una tabla normal
+   puedes copiar/pegar o arrastrar formulas para definir muchas variables
+   rapidamente (pensado para decenas o cientos de filas, no solo unas pocas).
+3. **Sube el Excel ya rellenado**. La app muestra una vista previa de lo
+   leido (variables, matriz de correlaciones y relaciones categorica →
+   continua si las hay) para que puedas revisarlo antes de generar nada.
+4. **Genera la simulacion**. Se muestra la tabla resultante, un boton de
+   descarga CSV, un informe objetivo-vs-obtenido (con el desglose por
+   categoria si hay relaciones) y un histograma por cada variable continua.
 
-Al generar se muestra la tabla resultante, un boton de descarga CSV, un
-informe objetivo-vs-obtenido (incluyendo el desglose por categoria si hay
-relaciones) y un histograma por cada variable continua.
+## Formato del Excel
 
-Toda la seccion (tabla de variables, relaciones y el boton de generar) vive
-dentro de un unico formulario: los valores que escribes se guardan al pulsar
-cualquier boton de esa seccion (➕ Anadir relacion, 🗑️ Eliminar, 💾 Aplicar
-cambios o 🚀 Generar simulacion), para que nunca se pierda lo que ya habias
-introducido en otra fila o relacion.
+Un ejemplo ya relleno esta en `examples/plantilla_ejemplo.xlsx` (es el mismo
+fichero que genera el boton "Descargar plantilla" de la app). Tiene 4 hojas:
+
+### Hoja `instrucciones`
+
+Texto explicando el resto de hojas, para no depender de este README al
+rellenarla.
+
+### Hoja `variables` (obligatoria)
+
+Una fila por variable, columnas:
+
+| nombre | tipo | distribucion | media | mediana | min | max | sd | categorias |
+|---|---|---|---|---|---|---|---|---|
+| edad | continuous | normal | 40 | 38 | 18 | 85 | | |
+| ingresos | continuous | lognormal | 30000 | 27000 | 5000 | 250000 | | |
+| sexo | categorical | | | | | | | Hombre:50;Mujer:50 |
+
+- `distribucion`, `media`, `mediana`, `min`, `max`, `sd` solo aplican si
+  `tipo = continuous`. `distribucion` es una de: `normal`, `lognormal`,
+  `uniform`, `triangular`, `exponential`, `beta`. `sd` es opcional (dejala
+  vacia si no quieres fijar la desviacion tipica).
+- `categorias` solo aplica si `tipo = categorical`, formato
+  `Nivel:proporcion;Nivel:proporcion` (ej. `Hombre:48;Mujer:50;Otro:2`); no
+  hace falta que las proporciones sumen 100, se normalizan solas.
+
+### Hoja `correlaciones` (opcional)
+
+Matriz de correlaciones entre variables **continuas**: la primera columna y
+la primera fila deben tener los mismos nombres de variable (en el mismo
+orden), la diagonal debe ser 1 y la matriz debe ser simetrica.
+
+|  | edad | satisfaccion |
+|---|---|---|
+| edad | 1 | 0.2 |
+| satisfaccion | 0.2 | 1 |
+
+### Hoja `efectos` (opcional)
+
+Efecto de una categorica sobre la media/mediana de una continua, en formato
+largo (una fila por variable continua + variable categorica + nivel):
+
+| variable_continua | variable_categorica | nivel | delta_media | delta_mediana |
+|---|---|---|---|---|
+| ingresos | sexo | Mujer | 5000 | 4000 |
+
+Deja `delta_media`/`delta_mediana` vacios para los niveles sin efecto (no
+hace falta listarlos). Varias filas con la misma variable pueden usar
+categoricas distintas (por ejemplo que `ingresos` dependa a la vez de `sexo`
+y de `region`); los desplazamientos se suman.
+
+**Restriccion:** una variable que aparece en `efectos` no puede aparecer
+tambien en `correlaciones`. Forzar una correlacion reordena las filas de esa
+variable, lo que deshace el efecto por categoria; la app (y la libreria) lo
+rechazan con un error explicito en vez de generar un resultado enganoso.
 
 ## Uso por linea de comandos
 
@@ -71,7 +123,10 @@ print(report.to_text())
 df.to_csv("output.csv", index=False)
 ```
 
-## Formato de la especificacion
+## Formato de la especificacion (YAML/JSON, para la CLI)
+
+Es el mismo modelo que el Excel (variables, correlation_matrix, effects), en
+formato YAML/JSON en vez de hojas de calculo:
 
 ```yaml
 n_rows: 2000        # numero de filas a generar
