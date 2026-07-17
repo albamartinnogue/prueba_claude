@@ -1,0 +1,65 @@
+# Ejemplo de especificacion para el simulador de bases de datos.
+n_rows: 2000
+seed: 42
+
+variables:
+  - name: edad
+    type: continuous
+    distribution: normal
+    mean: 42
+    median: 40
+    min: 18
+    max: 85
+
+  - name: ingresos
+    type: continuous
+    distribution: lognormal
+    mean: 32000
+    median: 27000
+    min: 5000
+    max: 250000
+    # Las mujeres tienen de media mas ingresos que el resto (el desplazamiento
+    # solo se aplica a las filas con genero = Mujer; el resto usa la media base).
+    effects:
+      - by: genero
+        mean_delta: {Mujer: 5000}
+        median_delta: {Mujer: 4000}
+
+  - name: satisfaccion
+    type: continuous
+    distribution: triangular
+    mean: 7
+    median: 7.5
+    min: 0
+    max: 10
+
+  - name: antiguedad_meses
+    type: continuous
+    distribution: exponential
+    mean: 24
+    median: 15
+    min: 0
+    max: 240
+
+  - name: genero
+    type: categorical
+    categories:
+      Hombre: 0.48
+      Mujer: 0.50
+      Otro: 0.02
+
+  - name: region
+    type: categorical
+    categories:
+      Norte: 0.25
+      Sur: 0.25
+      Este: 0.25
+      Oeste: 0.25
+
+# Nota: 'ingresos' no puede aparecer aqui porque ya tiene 'effects' arriba
+# (forzar una correlacion reordena filas y deshace el efecto por categoria).
+correlation_matrix:
+  variables: [edad, satisfaccion]
+  matrix:
+    - [1.0, 0.2]
+    - [0.2, 1.0]
